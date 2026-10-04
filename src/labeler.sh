@@ -11,22 +11,43 @@ labeler::label() {
   local -r files_to_ignore="${12}"
   local -r ignore_line_deletions="${13}"
   local -r ignore_file_deletions="${14}"
+  local max_modifications="${2}"
+  local max_size
+  for max_size in "${4}" "${6}" "${8}"; do
+    if [ "$max_size" -gt "$max_modifications" ]; then
+      max_modifications="$max_size"
+    fi
+  done
 
   local -r pr_number=$(github_actions::get_pr_number)
-  local -r total_modifications=$(github::calculate_total_modifications "$pr_number" "${files_to_ignore[*]}" "$ignore_line_deletions" "$ignore_file_deletions")
+  local calculated_modifications
+  calculated_modifications=$(github::calculate_total_modifications "$pr_number" "${files_to_ignore[*]}" "$ignore_line_deletions" "$ignore_file_deletions" "$max_modifications") || return 1
+  local -r total_modifications="$calculated_modifications"
 
-  log::message "Total modifications (additions + deletions): $total_modifications"
+  if [ "$total_modifications" -ge "$max_modifications" ] && [[ -n "$files_to_ignore" || "$ignore_file_deletions" == "true" ]]; then
+    log::message "Counted at least $total_modifications modifications (additions + deletions), largest size cutoff reached"
+  else
+    log::message "Counted modifications (additions + deletions): $total_modifications"
+  fi
   log::message "Ignoring files (if present): $files_to_ignore"
 
   local -r label_to_add=$(labeler::label_for "$total_modifications" "$@")
+  local should_comment_if_xl=false
+  if [ "$label_to_add" == "$xl_label" ] && [ -n "$message_if_xl" ]; then
+    github::has_label "$pr_number" "$label_to_add" || {
+      local lookup_status=$?
+      [ "$lookup_status" -eq 1 ] || return 1
+      should_comment_if_xl=true
+    }
+  fi
 
   log::message "Labeling pull request with $label_to_add"
 
-  github::add_label_to_pr "$pr_number" "$label_to_add" "$xs_label" "$s_label" "$m_label" "$l_label" "$xl_label"
+  github::add_label_to_pr "$pr_number" "$label_to_add" "$xs_label" "$s_label" "$m_label" "$l_label" "$xl_label" || return 1
 
   if [ "$label_to_add" == "$xl_label" ]; then
-    if [ -n "$message_if_xl" ] && ! github::has_label "$pr_number" "$label_to_add"; then
-      github::comment "$message_if_xl"
+    if [ "$should_comment_if_xl" == "true" ]; then
+      github::comment "$message_if_xl" || return 1
     fi
 
     if [ "$fail_if_xl" == "true" ]; then
